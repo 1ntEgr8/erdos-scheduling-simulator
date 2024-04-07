@@ -23,7 +23,7 @@ def get_all_stage_info_for_query(query_num):
 
 def get_base_tpch_graph_structure(query_num):
     # use query_num to read string from file
-    with open(os.path.join(HOME_TPCH_DIR, "query_dag.json")) as f:
+    with open(os.path.join(DECIMA_TPCH_DIR, "query_dag.json")) as f:
         tpch_query_json = json.load(f)
 
     # get query dependency from file
