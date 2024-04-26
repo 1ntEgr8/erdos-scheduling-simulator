@@ -28,6 +28,7 @@ void GurobiSolver::GurobiInterruptOptimizationCallback::callback() {
     auto currentTime = std::chrono::steady_clock::now();
 
     // Check if we need to abort due to time limits.
+    // if (where == GRB_CB_POLLING) {
     if (params.timeLimitMs.has_value()) {
       auto elapsedTimeMs =
           std::chrono::duration_cast<std::chrono::milliseconds>(currentTime -
@@ -50,6 +51,7 @@ void GurobiSolver::GurobiInterruptOptimizationCallback::callback() {
     }
 
     // Check if we need to abort due to the upper bound of the objective.
+    // } else
     if (where == GRB_CB_MIPSOL && params.utilityUpperBound.has_value()) {
       auto solutionObjectiveValue = getDoubleInfo(GRB_CB_MIPSOL_OBJ);
       if (solutionObjectiveValue >= params.utilityUpperBound.value() -
