@@ -698,7 +698,7 @@ void DiscretizationSelectorOptimizationPass::runPass(
   //             - minOccupancyTime] << std::endl;
   // }
 
-  // changing the STRL expressions 
+  // changing the STRL expressions
   // for (auto &[discreteTimeRange, discreteGranularity] : timeRangeToGranularities)
   // Find Max expressions over NCK and remove NCK expressions with redundant
   // start times
@@ -715,7 +715,7 @@ void DiscretizationSelectorOptimizationPass::runPass(
         auto endTime = discreteTimeRange.second;
         // find ncks within startTime and endTime for this Max expr
         // std::vector<ExpressionPtr> ncksWithinTimeRange;
-        
+
         ExpressionPtr minStartTimeNckExpr = nullptr;
         ExpressionPtr prevSolutionNckExpr = nullptr;
         for (; child != expressionChildren.end(); ++child) {
@@ -1126,37 +1126,17 @@ void CapacityConstraintMapPurgingOptimizationPass::clean() { cliques.clear(); }
 
 /* Methods for OptimizationPassRunner */
 OptimizationPassRunner::OptimizationPassRunner(
-    bool debug, OptimizationPassConfigPtr optConfig)
-    : debug(debug), optConfig(optConfig)
-{
-  // Register the Critical Path optimization pass.
-  // registeredPasses.push_back(std::make_shared<CriticalPathOptimizationPass>());
-
-  // if (enableDynamicDiscretization) {
-  //   // Register the DiscretizationGenerator pass.
-  //   registeredPasses.push_back(
-  //       std::make_shared<DiscretizationSelectorOptimizationPass>(
-  //           minDiscretization, maxDiscretization, maxOccupancyThreshold,
-  //           finerDiscretizationAtPrevSolution, finerDiscretizationWindow));
-  // }
-
-  // // Register the CapacityConstraintMapPurging optimization pass.
-  // registeredPasses.push_back(
-  //     std::make_shared<CapacityConstraintMapPurgingOptimizationPass>());
-}
+    OptimizationPassConfigPtr optConfig, bool debug)
+    : debug(debug), optConfig(optConfig) { }
 
 void OptimizationPassRunner::addOptimizationPass(OptimizationPassCategory optPass) {
-  // Register the Critical Path optimization pass.
-
+  // Register the requested optimization pass.
   switch (optPass)
   {
     case OptimizationPassCategory::CRITICAL_PATH_PASS:
       registeredPasses.push_back(std::make_shared<CriticalPathOptimizationPass>());
       break;
     case OptimizationPassCategory::DYNAMIC_DISCRETIZATION_PASS:
-      if (optConfig == nullptr) {
-        optConfig = std::make_shared<OptimizationPassConfig>();
-      }
       registeredPasses.push_back(std::make_shared<DiscretizationSelectorOptimizationPass>(
           optConfig->minDiscretization, optConfig->maxDiscretization, optConfig->maxOccupancyThreshold,
           optConfig->finerDiscretizationAtPrevSolution, optConfig->finerDiscretizationWindow));
@@ -1164,9 +1144,9 @@ void OptimizationPassRunner::addOptimizationPass(OptimizationPassCategory optPas
     case OptimizationPassCategory::CAPACITY_CONSTRAINT_PURGE_PASS:
       registeredPasses.push_back(std::make_shared<CapacityConstraintMapPurgingOptimizationPass>());
       break;
-
     default:
-      break;
+      throw tetrisched::exceptions::RuntimeException(
+        "Unknown Optimization Pass Category: " + std::to_string((int) optPass));
   }
 }
 
