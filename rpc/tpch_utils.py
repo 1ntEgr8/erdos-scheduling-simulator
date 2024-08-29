@@ -136,6 +136,19 @@ def use_decima_tpch_profile(query_num, dataset_size):
     return stage_info
 
 
+# from data import TpchLoader
+# 
+# HOME_TPCH_DIR = "../profiles/workload/tpch_decima/"
+# TPCH_SUBDIR = "2g/"
+# 
+# 
+# def get_all_stage_info_for_query(query_num):
+#     return TpchLoader.get_profiler_data_for_query(
+#         profile_path=os.path.join(HOME_TPCH_DIR, TPCH_SUBDIR),
+#         query_num=query_num,
+#     )
+
+
 def get_base_tpch_graph_structure(query_num):
     with open(os.path.join(TPCH_PARENT_DIR, "queries.yaml")) as f:
         tpch_query_yaml = yaml.load(f, Loader=yaml.FullLoader)
