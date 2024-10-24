@@ -15,6 +15,8 @@ sys.path.append(two_level_parent_dir)
 from workload import JobGraph
 from utils import EventTime
 
+from data.tpch_loader import make_release_policy
+
 
 # Function to parse command-line arguments
 def parse_arguments():
@@ -36,15 +38,13 @@ def parse_arguments():
     
     # Simulator release generator specific arguments
     parser.add_argument("--period", type=int, default=25,
-                        help="Releases a DAG after period time has elapsed (default: 25)")
+                        help="Releases a DAG after period time has elapsed")
     parser.add_argument("--variable_arrival_rate", type=float, default=1.0,
-                        help="Variable arrival rate for poisson and gamma distributions (default: 1.0)")
+                        help="Variable arrival rate for poisson and gamma distributions")
     parser.add_argument("--coefficient", type=float, default=1.0,
-                        help="Coefficient for poisson and gamma distributions (default: 1.0)")
+                        help="Coefficient for poisson and gamma distributions")
     parser.add_argument("--base_arrival_rate", type=float, default=1.0,
-                        help="Base arrival rate for fixed_gamma distribution (default: 1.0)")
-    parser.add_argument("--concurrency", type=int, default=1,
-                        help="Defines the number of concurrent DAGs to execute in closed_loop setting (default: 1)")
+                        help="Base arrival rate for fixed_gamma distribution")
     parser.add_argument("--randomize_start_time_min", type=int, default=0)
     parser.add_argument("--randomize_start_time_max", type=int, default=0)
     parser.add_argument("--rng_seed", type=int, default=1234,
@@ -112,41 +112,51 @@ def main():
         print("Inter-arrival times generated from launch_script_impl:", inter_arrival_times)
         
     elif args.release_generator == "simulator_release_impl":
-        # set chosen policy based on the input arg
-        chosen_polilcy = None
         if args.distribution == "periodic":
-            chosen_polilcy = JobGraph.ReleasePolicyType.PERIODIC
-        elif args.distribution == "fixed":
-            chosen_polilcy = JobGraph.ReleasePolicyType.FIXED
-        elif args.distribution == "poisson":
-            chosen_polilcy = JobGraph.ReleasePolicyType.POISSON
-        elif args.distribution == "gamma":
-            chosen_polilcy = JobGraph.ReleasePolicyType.GAMMA
-        elif args.distribution == "closed_loop":
-            chosen_polilcy = JobGraph.ReleasePolicyType.CLOSED_LOOP
-        elif args.distribution == "fixed_gamma":
-            chosen_polilcy = JobGraph.ReleasePolicyType.FIXED_AND_GAMMA
-            
-        # Use ReleasePolicy in JobGraph to get the release times
-        # Create an instance of the release policy
-        release_policy = JobGraph.ReleasePolicy(
-            policy_type=chosen_polilcy,
-            period=EventTime(args.period, EventTime.Unit.US),
-            fixed_invocation_nums=args.num_queries,
-            variable_arrival_rate=args.variable_arrival_rate,
-            coefficient=args.coefficient,
-            concurrency=args.concurrency,
-            start=EventTime(
-                time=rng.randint(
-                    args.randomize_start_time_min,
-                    args.randomize_start_time_max,
+            release_policy_args = {
+                "period": EventTime(
+                    args.period, EventTime.Unit.US
                 ),
-                unit=EventTime.Unit.US
-            ),
-            base_arrival_rate=args.base_arrival_rate,
-            rng_seed=args.rng_seed
+            }
+        elif args.distribution == "fixed":
+            release_policy_args = {
+                "period": EventTime(
+                    args.period, EventTime.Unit.US
+                ),
+                "num_invocations": args.num_queries,
+            }
+        elif args.distribution == "poisson":
+            release_policy_args = {
+                "rate": args.variable_arrival_rate,
+                "num_invocations": args.num_queries,
+            }
+        elif args.distribution == "gamma":
+            release_policy_args = {
+                "rate": args.variable_arrival_rate,
+                "num_invocations": args.num_queries,
+                "coefficient": args.coefficient,
+            }
+        elif args.distribution == "fixed_gamma":
+            release_policy_args = {
+                "variable_arrival_rate": args.variable_arrival_rate,
+                "base_arrival_rate": args.base_arrival_rate,
+                "num_invocations": args.num_queries,
+                "coefficient": args.coefficient,
+            }
+        else:
+            raise NotImplementedError(
+                f"Release policy {args.distribution} not implemented."
+            )
+
+
+        release_policy = make_release_policy(
+            args.distribution,
+            release_policy_args,
+            rng,
+            args.rng_seed,
+            (args.randomize_start_time_min, args.randomize_start_time_max),
         )
-        
+
         # Get release times from the simulator using the release
         # policy
         release_times = release_policy.get_release_times(

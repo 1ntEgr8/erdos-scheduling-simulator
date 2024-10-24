@@ -48,7 +48,7 @@ class TpchLoader(BaseWorkloadLoader):
             self._workload_update_interval = flags.workload_update_interval
         else:
             self._workload_update_interval = EventTime(sys.maxsize, EventTime.Unit.US)
-        release_policy = self._get_release_policy()
+        release_policy = self._make_release_policy()
         self._release_times = release_policy.get_release_times(
             completion_time=EventTime(self._flags.loop_timeout, EventTime.Unit.US)
         )
@@ -79,7 +79,7 @@ class TpchLoader(BaseWorkloadLoader):
         # Initialize workload
         self._workload = Workload.empty(flags)
 
-    def _get_release_policy(self):
+    def _make_release_policy(self):
         release_policy_args = {}
         if self._flags.override_release_policy == "periodic":
             release_policy_args = {
@@ -116,23 +116,14 @@ class TpchLoader(BaseWorkloadLoader):
             raise NotImplementedError(
                 f"Release policy {self._flags.override_release_policy} not implemented."
             )
-
-        # Check that none of the arg values are None
-        assert all([val is not None for val in release_policy_args.values()])
-
-        # Construct the release policy
-        start_time = EventTime(
-            time=self._rng.randint(
-                self._flags.randomize_start_time_min,
-                self._flags.randomize_start_time_max,
-            ),
-            unit=EventTime.Unit.US,
+        
+        return make_release_policy(
+            self._flags.override_release_policy,
+            release_policy_args,
+            self._rng,
+            self._rng_seed,
+            (self._flags.randomize_start_time_min, self._flags.randomize_start_time_max),
         )
-        release_policy = getattr(
-            JobGraph.ReleasePolicy, self._flags.override_release_policy
-        )(start=start_time, rng_seed=self._rng_seed, **release_policy_args)
-
-        return release_policy
 
     def make_job_graph(
         self,
@@ -257,6 +248,22 @@ class TpchLoader(BaseWorkloadLoader):
             self._workload.add_task_graph(task_graph)
 
         return self._workload
+
+
+def make_release_policy(release_policy, release_policy_args, rng, seed, randomize_start_time=(0,0)):
+    # Check that none of the arg values are None
+    assert all([val is not None for val in release_policy_args.values()])
+
+    # Construct the release policy
+    start_time = EventTime(
+        time=rng.randint(*randomize_start_time),
+        unit=EventTime.Unit.US,
+    )
+    release_policy = getattr(
+        JobGraph.ReleasePolicy, release_policy
+    )(start=start_time, rng_seed=seed, **release_policy_args)
+
+    return release_policy
 
 
 # TODO: make configurable
