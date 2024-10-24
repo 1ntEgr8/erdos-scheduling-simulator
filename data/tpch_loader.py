@@ -1,4 +1,6 @@
+import os
 import math
+import json
 import sys
 import random
 
@@ -58,13 +60,6 @@ class TpchLoader(BaseWorkloadLoader):
         with open(path, "r") as f:
             workload_data = yaml.safe_load(f)
 
-        if flags.workload_profile_path:
-            workload_profile_path = str(
-                Path(flags.workload_profile_path) / f"{flags.s.tpch_dataset_size}g"
-            )
-        else:
-            workload_profile_path = "./profiles/workload/tpch/decima/2g"
-
         job_graphs = {}
         for query in workload_data["graphs"]:
             query_name = query["name"]
@@ -72,7 +67,6 @@ class TpchLoader(BaseWorkloadLoader):
             job_graph = self.make_job_graph(
                 query_name=query_name,
                 graph=graph,
-                profile_path=workload_profile_path,
                 deadline_variance=(
                     int(flags.min_deadline_variance),
                     int(flags.max_deadline_variance),
@@ -144,7 +138,6 @@ class TpchLoader(BaseWorkloadLoader):
         self,
         query_name: str,
         graph: List[Dict[str, Any]],
-        profile_path: str,
         deadline_variance=(0, 0),
     ) -> JobGraph:
         job_graph = JobGraph(
@@ -153,7 +146,12 @@ class TpchLoader(BaseWorkloadLoader):
         )
 
         query_num = int(query_name[1:])
-        profiler_data = TpchLoader.get_profiler_data_for_query(profile_path, query_num)
+        profiler_data = get_all_stage_info_for_query(
+            query_num,
+            self._flags.tpch_profile_type,
+            self._flags.tpch_dataset_size,
+            self._flags.tpch_max_executors_per_job,
+        )
 
         name_to_job = {}
         for node in graph:
@@ -189,10 +187,10 @@ class TpchLoader(BaseWorkloadLoader):
 
         # adjust runtime based on num_tasks
         runtime = (
-            profile["avg_task_duration"]
+            profile["avg_task_duration_ms"]
             if profile["num_tasks"] <= self._flags.tpch_max_executors_per_job
             else math.ceil(
-                (profile["num_tasks"] * profile["avg_task_duration"])
+                (profile["num_tasks"] * profile["avg_task_duration_ms"])
                 / self._flags.tpch_max_executors_per_job
             )
         )
@@ -205,7 +203,7 @@ class TpchLoader(BaseWorkloadLoader):
                 query_name,
                 self._flags.tpch_max_executors_per_job,
                 profile["num_tasks"],
-                profile["avg_task_duration"],
+                profile["avg_task_duration_ms"],
                 num_tasks,
                 runtime,
             )
@@ -230,60 +228,6 @@ class TpchLoader(BaseWorkloadLoader):
             name=f"{query_name}_{node_name}_execution_profile",
             execution_strategies=execution_strategies,
         )
-
-    @staticmethod
-    def get_profiler_data_for_query(
-        profile_path: str, query_num: int
-    ) -> Dict[int, Dict[str, Any]]:
-        def pre_process_task_duration(task_duration):
-            # remove fresh durations from first wave
-            clean_first_wave = {}
-            for e in task_duration["first_wave"]:
-                clean_first_wave[e] = []
-                fresh_durations = SetWithCount()
-                for d in task_duration["fresh_durations"][e]:
-                    fresh_durations.add(d)
-                for d in task_duration["first_wave"][e]:
-                    if d not in fresh_durations:
-                        clean_first_wave[e].append(d)
-                    else:
-                        # prevent duplicated fresh duration blocking first wave
-                        fresh_durations.remove(d)
-
-        task_durations = np.load(
-            Path(profile_path) / f"task_duration_{query_num}.npy",
-            allow_pickle=True,
-        ).item()
-
-        num_nodes = len(task_durations)
-
-        stage_info = {}
-
-        for n in range(num_nodes):
-            task_duration = task_durations[n]
-            e = next(iter(task_duration["first_wave"]))
-
-            num_tasks = len(task_duration["first_wave"][e]) + len(
-                task_duration["rest_wave"][e]
-            )
-
-            # remove fresh duration from first wave duration
-            # drag nearest neighbor first wave duration to empty spots
-            pre_process_task_duration(task_duration)
-            rough_duration = np.mean(
-                [i for t in task_duration["first_wave"].values() for i in t]
-                + [i for t in task_duration["rest_wave"].values() for i in t]
-                + [i for t in task_duration["fresh_durations"].values() for i in t]
-            )
-
-            curr_stage = {
-                "stage_id": n,
-                "num_tasks": num_tasks,
-                "avg_task_duration": round(rough_duration),  # in milliseconds
-            }
-            stage_info[n] = curr_stage
-
-        return stage_info
 
     def get_next_workload(self, current_time: EventTime) -> Optional[Workload]:
         to_release = []
@@ -315,6 +259,16 @@ class TpchLoader(BaseWorkloadLoader):
         return self._workload
 
 
+# TODO: make configurable
+TPCH_SUBDIR = "100g/"
+DECIMA_TPCH_DIR = (
+    "/home/dgarg39/erdos-scheduling-simulator/profiles/workload/tpch/decima/"
+)
+CLOUDLAB_TPCH_DIR = (
+    "/home/dgarg39/erdos-scheduling-simulator/profiles/workload/tpch/cloudlab/"
+)
+
+
 class SetWithCount(object):
     """
     allow duplication in set
@@ -339,3 +293,104 @@ class SetWithCount(object):
         self.set[item] -= 1
         if self.set[item] == 0:
             del self.set[item]
+
+
+def pre_process_task_duration(task_duration):
+    # remove fresh durations from first wave
+    clean_first_wave = {}
+    for e in task_duration["first_wave"]:
+        clean_first_wave[e] = []
+        fresh_durations = SetWithCount()
+        # O(1) access
+        for d in task_duration["fresh_durations"][e]:
+            fresh_durations.add(d)
+        for d in task_duration["first_wave"][e]:
+            if d not in fresh_durations:
+                clean_first_wave[e].append(d)
+            else:
+                # prevent duplicated fresh duration blocking first wave
+                fresh_durations.remove(d)
+
+
+def get_all_stage_info_for_query(query_num, profile_type, dataset_size, max_executors):
+    stage_info = {}
+    if profile_type == "Decima":
+        stage_info = use_decima_tpch_profile(query_num, dataset_size)
+    elif profile_type == "Cloudlab":
+        stage_info = use_cloudlab_profile(query_num, dataset_size, max_executors)
+    else:
+        raise ValueError(f"Invalid profile type: {profile_type}")
+
+    return stage_info
+
+
+def use_cloudlab_profile(query_num, dataset_size, max_executors):
+    cloudlab_profile_json = os.path.join(
+        CLOUDLAB_TPCH_DIR, "cloudlab_22query_tpch_profiles.json"
+    )
+    with open(cloudlab_profile_json, "r") as file:
+        data = json.load(file)
+
+    query_key_to_extract = (
+        "tpch_q"
+        + str(query_num)
+        + "_"
+        + str(dataset_size)
+        + "g"
+        + "_maxCores_"
+        + str(max_executors)
+    )
+    required_query_profile = data[query_key_to_extract]
+
+    stage_info = {}
+
+    for i, stage_profile in enumerate(required_query_profile):
+        curr_stage = {
+            "stage_id": i,
+            "num_tasks": stage_profile["num_tasks"],
+            "avg_task_duration_ms": round(stage_profile["average_runtime_ms"]),
+        }
+        stage_info[i] = curr_stage
+
+    return stage_info
+
+
+def use_decima_tpch_profile(query_num, dataset_size):
+    task_durations = np.load(
+        os.path.join(
+            DECIMA_TPCH_DIR, dataset_size, "task_duration_" + str(query_num) + ".npy"
+        ),
+        allow_pickle=True,
+    ).item()
+
+    num_nodes = len(task_durations)
+
+    stage_info = {}
+
+    for n in range(num_nodes):
+        task_duration = task_durations[n]
+        e = next(iter(task_duration["first_wave"]))
+        # NOTE: somehow only picks the first element {2: [n_tasks_in_ms]}
+
+        num_tasks = len(task_duration["first_wave"][e]) + len(
+            task_duration["rest_wave"][e]
+        )
+
+        # remove fresh duration from first wave duration
+        # drag nearest neighbor first wave duration to empty spots
+        pre_process_task_duration(task_duration)
+        rough_duration = np.mean(
+            [i for t in task_duration["first_wave"].values() for i in t]
+            + [i for t in task_duration["rest_wave"].values() for i in t]
+            + [i for t in task_duration["fresh_durations"].values() for i in t]
+        )
+
+        # NOTE: Runtime per task is given in milliseconds
+        curr_stage = {
+            "stage_id": n,
+            "num_tasks": num_tasks,
+            "avg_task_duration_ms": round(rough_duration),
+        }
+        stage_info[n] = curr_stage
+
+    return stage_info
