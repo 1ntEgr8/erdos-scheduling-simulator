@@ -9,7 +9,7 @@ from typing import Mapping, Sequence
 import networkx as nx
 import numpy as np
 
-from data import get_all_stage_info_for_query
+from data.tpch_loader import get_all_stage_info_for_query
 
 
 TPCH_PARENT_DIR = "/home/dgarg39/erdos-scheduling-simulator/profiles/workload/tpch/"
