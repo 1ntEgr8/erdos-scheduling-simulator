@@ -45,6 +45,8 @@ def parse_arguments():
                         help="Base arrival rate for fixed_gamma distribution (default: 1.0)")
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Defines the number of concurrent DAGs to execute in closed_loop setting (default: 1)")
+    parser.add_argument("--randomize_start_time_min", type=int, default=0)
+    parser.add_argument("--randomize_start_time_max", type=int, default=0)
     parser.add_argument("--rng_seed", type=int, default=1234,
                         help="RNG seed for generating inter-arrival periods and picking DAGs (default: 1234)")
     
@@ -134,7 +136,13 @@ def main():
             variable_arrival_rate=args.variable_arrival_rate,
             coefficient=args.coefficient,
             concurrency=args.concurrency,
-            start=EventTime(0, EventTime.Unit.US),
+            start=EventTime(
+                time=rng.randint(
+                    args.randomize_start_time_min,
+                    args.randomize_start_time_max,
+                ),
+                unit=EventTime.Unit.US
+            ),
             base_arrival_rate=args.base_arrival_rate,
             rng_seed=args.rng_seed
         )
@@ -165,8 +173,8 @@ def main():
         release_start_ts = time.time()
         for i, release_time in enumerate(release_times):
             next_release_ts = release_start_ts + release_time.time
-            while time.time() < next_release_ts:
-                time.sleep(0.1)
+            # while time.time() < next_release_ts:
+            #     time.sleep(0.1)
             query_number = rng.randint(1, 22)
             print("Current time: ", time.strftime('%Y-%m-%d %H:%M:%S'), ", time_elapsed: ", str(release_time.time), ", launching query: ", query_number)
 
