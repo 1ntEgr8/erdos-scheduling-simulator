@@ -116,13 +116,16 @@ class TpchLoader(BaseWorkloadLoader):
             raise NotImplementedError(
                 f"Release policy {self._flags.override_release_policy} not implemented."
             )
-        
+
         return make_release_policy(
             self._flags.override_release_policy,
             release_policy_args,
             self._rng,
             self._rng_seed,
-            (self._flags.randomize_start_time_min, self._flags.randomize_start_time_max),
+            (
+                self._flags.randomize_start_time_min,
+                self._flags.randomize_start_time_max,
+            ),
         )
 
     def make_job_graph(
@@ -134,6 +137,7 @@ class TpchLoader(BaseWorkloadLoader):
         job_graph = JobGraph(
             name=query_name,
             deadline_variance=deadline_variance,
+            completion_time=EventTime(120, EventTime.Unit.US),
         )
 
         query_num = int(query_name[1:])
@@ -151,7 +155,10 @@ class TpchLoader(BaseWorkloadLoader):
                 query_name=query_name,
                 node_name=node["name"],
             )
-            job = Job(name=node["name"], profile=worker_profile)
+            job = Job(
+                name=node["name"],
+                profile=worker_profile,
+            )
             name_to_job[node["name"]] = job
             job_graph.add_job(job=job)
 
@@ -174,37 +181,50 @@ class TpchLoader(BaseWorkloadLoader):
     ) -> WorkProfile:
         profile = profiler_data[int(node_name)]
 
-        num_tasks = min(self._flags.tpch_max_executors_per_job, profile["num_tasks"])
+        profiled_task_slots = profile["num_tasks"]
+        profiled_runtime = math.ceil(profile["avg_task_duration_ms"] / 1e3)
 
-        # adjust runtime based on num_tasks
-        runtime = (
-            profile["avg_task_duration_ms"]
-            if profile["num_tasks"] <= self._flags.tpch_max_executors_per_job
-            else math.ceil(
-                (profile["num_tasks"] * profile["avg_task_duration_ms"])
+        if profiled_task_slots > self._flags.tpch_max_executors_per_job:
+            num_slots = self._flags.tpch_max_executors_per_job
+            runtime = math.ceil(
+                (profiled_task_slots * profiled_runtime)
                 / self._flags.tpch_max_executors_per_job
             )
-        )
-
-        if profile["num_tasks"] > self._flags.tpch_max_executors_per_job:
             self._logger.debug(
-                "%s@%s: Profiled slots > tpch_max_executors_per_job: %s. Converted "
-                "(slots,runtime) from (%s,%sms) to (%s, %sms)",
+                "%s@%s: num_slots (%s) > tpch_max_executors_per_job (%s). Converted "
+                "(slots,runtime) from (%s,%s) to (%s, %s)",
                 node_name,
                 query_name,
+                profiled_task_slots,
                 self._flags.tpch_max_executors_per_job,
-                profile["num_tasks"],
-                profile["avg_task_duration_ms"],
-                num_tasks,
+                profiled_task_slots,
+                profiled_runtime,
+                num_slots,
+                runtime,
+            )
+        else:
+            num_slots = profiled_task_slots
+            runtime = profiled_runtime
+
+        if runtime < self._flags.tpch_min_task_runtime:
+            _runtime = runtime
+            runtime = max(self._flags.tpch_min_task_runtime, _runtime)
+            self._logger.debug(
+                "%s@%s: runtime (%s) < tpch_min_task_runtime (%s). Converted "
+                "(slots,runtime) from (%s,%s) to (%s, %s)",
+                node_name,
+                query_name,
+                _runtime,
+                self._flags.tpch_min_task_runtime,
+                num_slots,
+                _runtime,
+                num_slots,
                 runtime,
             )
 
-        # convert runtime to us, it is in millseconds
-        runtime = round(max(self._flags.tpch_min_task_runtime, runtime / 1e3))
-
         resources = Resources(
             resource_vector={
-                Resource(name="Slot", _id="any"): num_tasks,
+                Resource(name="Slot", _id="any"): num_slots,
             },
         )
         execution_strategies = ExecutionStrategies()
@@ -250,7 +270,9 @@ class TpchLoader(BaseWorkloadLoader):
         return self._workload
 
 
-def make_release_policy(release_policy, release_policy_args, rng, seed, randomize_start_time=(0,0)):
+def make_release_policy(
+    release_policy, release_policy_args, rng, seed, randomize_start_time=(0, 0)
+):
     # Check that none of the arg values are None
     assert all([val is not None for val in release_policy_args.values()])
 
@@ -259,9 +281,9 @@ def make_release_policy(release_policy, release_policy_args, rng, seed, randomiz
         time=rng.randint(*randomize_start_time),
         unit=EventTime.Unit.US,
     )
-    release_policy = getattr(
-        JobGraph.ReleasePolicy, release_policy
-    )(start=start_time, rng_seed=seed, **release_policy_args)
+    release_policy = getattr(JobGraph.ReleasePolicy, release_policy)(
+        start=start_time, rng_seed=seed, **release_policy_args
+    )
 
     return release_policy
 
