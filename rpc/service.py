@@ -227,7 +227,11 @@ flags.DEFINE_bool(
     "num_tasks (= num_slots) for different stages of the TPCH job, uniformly sampled "
     "in a range.",
 )
-
+flags.DEFINE_integer(
+    "random_seed",
+    random.randint(0, sys.maxsize),
+    "The seed to be used for random number generation. Defaults to a random number.",
+)
 
 # Define an item containing completion timestamp and task
 class TimedItem:
@@ -307,7 +311,7 @@ class SchedulerServiceServicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer
         self._max_task_graph_deadline_variance = FLAGS.max_task_graph_deadline_variance
 
         # Setting a rng for future use
-        self._rng = random.Random(1234)
+        self._rng = random.Random(FLAGS.random_seed)
 
         # Scheduler information maintained by the servicer.
         self._scheduler_running_lock = asyncio.Lock()
@@ -685,7 +689,6 @@ class SchedulerServiceServicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer
                 success=False,
                 message=f"Framework already registered at "
                 f"{self._initialization_time} at the address {self._master_uri}",
-            )
 
         # Setup a new Framework instance.
         framework_name = request.name
