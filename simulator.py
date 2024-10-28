@@ -1548,10 +1548,12 @@ class Simulator(object):
                 # )
                 # self._event_queue.add_event(event)
                 self._logger.info(
-                    "[%s] Task graph release: %s at %s",
+                    "[%s] Task graph release: TaskGraph(name=%s,release_time=%s,deadline=%s,critical_path_runtime=%s)",
                     self._simulator_time.to(EventTime.Unit.US).time,
                     task_graph.name,
                     task_graph.release_time,
+                    task_graph.deadline,
+                    task_graph.critical_path_runtime,
                 )
                 # self._logger.info(
                 #     "[%s] Added %s to the event queue.",

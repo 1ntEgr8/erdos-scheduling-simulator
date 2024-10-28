@@ -4,7 +4,7 @@ import json
 import sys
 import random
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 from pathlib import Path
 
 import absl
@@ -15,6 +15,7 @@ from utils import EventTime, setup_logging
 from workload import (
     Workload,
     WorkProfile,
+    TaskGraph,
     Job,
     JobGraph,
     ExecutionStrategy,
@@ -48,33 +49,32 @@ class TpchLoader(BaseWorkloadLoader):
             self._workload_update_interval = flags.workload_update_interval
         else:
             self._workload_update_interval = EventTime(sys.maxsize, EventTime.Unit.US)
-        release_policy = self._make_release_policy()
-        self._release_times = release_policy.get_release_times(
-            completion_time=EventTime(self._flags.loop_timeout, EventTime.Unit.US)
-        )
-
-        self._current_release_pointer = 0
-
-        # Set up query name to job graph mapping
-
+        
+        # Set up task graph generators
         with open(path, "r") as f:
             workload_data = yaml.safe_load(f)
-
-        job_graphs = {}
+        task_graph_generators = {}
         for query in workload_data["graphs"]:
             query_name = query["name"]
             graph = query["graph"]
-            job_graph = self.make_job_graph(
+            gen = self.make_task_graph_generator(
                 query_name=query_name,
                 graph=graph,
-                deadline_variance=(
-                    int(flags.min_deadline_variance),
-                    int(flags.max_deadline_variance),
-                ),
             )
-            job_graphs[query_name] = job_graph
+            task_graph_generators[query_name] = gen
+        self._task_graph_generators = task_graph_generators
 
-        self._job_graphs = job_graphs
+        # Gather release times
+        release_policy = self._make_release_policy()
+        release_times = release_policy.get_release_times(
+            completion_time=EventTime(self._flags.loop_timeout, EventTime.Unit.US)
+        )
+
+        # Sample queries to be released
+        query_nums = [self._rng.randint(1, len(self._task_graph_generators)) for _ in range(self._flags.override_num_invocation)]
+
+        self._query_nums_and_release_times = list(zip(query_nums, release_times))
+        self._current_release_pointer = 0
 
         # Initialize workload
         self._workload = Workload.empty(flags)
@@ -128,53 +128,82 @@ class TpchLoader(BaseWorkloadLoader):
             ),
         )
 
-    def make_job_graph(
+    def make_task_graph_generator(
         self,
         query_name: str,
         graph: List[Dict[str, Any]],
-        deadline_variance=(0, 0),
-    ) -> JobGraph:
-        job_graph = JobGraph(
-            name=query_name,
-            deadline_variance=deadline_variance,
-            completion_time=EventTime(120, EventTime.Unit.US),
-        )
-
-        query_num = int(query_name[1:])
-        profiler_data = get_all_stage_info_for_query(
-            query_num,
-            self._flags.tpch_profile_type,
-            self._flags.tpch_dataset_size,
-            self._flags.tpch_max_executors_per_job,
-        )
-
-        name_to_job = {}
-        for node in graph:
-            worker_profile = self.make_work_profile(
-                profiler_data=profiler_data,
-                query_name=query_name,
-                node_name=node["name"],
+    ) -> Callable[[int, EventTime, EventTime], TaskGraph]:
+        def h(idx: int, current_time: EventTime, start_time: EventTime):
+            # Construct a JobGraph
+            job_graph = JobGraph(name=f"{query_name}[{idx}]")
+            query_num = int(query_name[1:])
+            profiler_data = get_all_stage_info_for_query(
+                query_num,
+                self._flags.tpch_profile_type,
+                self._flags.tpch_dataset_size,
+                self._flags.tpch_max_executors_per_job,
             )
-            job = Job(
-                name=node["name"],
-                profile=worker_profile,
+            name_to_job = {}
+            for node in graph:
+                worker_profile = self.make_work_profile(
+                    profiler_data=profiler_data,
+                    query_name=query_name,
+                    node_name=node["name"],
+                )
+                job = Job(
+                    name=node["name"],
+                    profile=worker_profile,
+                )
+                name_to_job[node["name"]] = job
+                job_graph.add_job(job=job)
+            for node in graph:
+                job = name_to_job[node["name"]]
+                if "children" in node:
+                    for child in node["children"]:
+                        if child not in name_to_job:
+                            raise ValueError(
+                                f"Child {child} of {node['name']} was "
+                                f"not present in the graph."
+                            )
+                        child_job = name_to_job[child]
+                        job_graph.add_child(job, child_job)
+                
+            # Construct TaskGraph from JobGraph
+            task_graph = job_graph.get_next_task_graph(
+                start_time=start_time,
+                _flags=self._flags,
             )
-            name_to_job[node["name"]] = job
-            job_graph.add_job(job=job)
 
-        for node in graph:
-            job = name_to_job[node["name"]]
-            if "children" in node:
-                for child in node["children"]:
-                    if child not in name_to_job:
-                        raise ValueError(
-                            f"Child {child} of {node['name']} was "
-                            f"not present in the graph."
-                        )
-                    child_job = name_to_job[child]
-                    job_graph.add_child(job, child_job)
+            # Update deadline
+            critical_path = task_graph.get_longest_path(
+                weights=lambda task: (task.slowest_execution_strategy.runtime.time)
+            )
+            critical_path_time = (
+                sum(
+                    [t.slowest_execution_strategy.runtime for t in critical_path],
+                    start=EventTime.zero(),
+                )
+                .to(EventTime.Unit.US)
+                .time
+            )
+            deadline_variance_factor = 1.0 + (
+                self._rng.randint(
+                    self._flags.min_deadline_variance,
+                    self._flags.max_deadline_variance,
+                )
+            )/100
+            print(deadline_variance_factor)
+            task_graph_slo_time = math.ceil(
+                critical_path_time * deadline_variance_factor
+            )
+            for task in task_graph.get_nodes():
+                deadline = EventTime(current_time.time + task_graph_slo_time,
+                                     unit=EventTime.Unit.US
+                                     )
+                task.update_deadline(deadline)
 
-        return job_graph
+            return task_graph
+        return h
 
     def make_work_profile(
         self, profiler_data: Dict[int, Dict[str, Any]], query_name: str, node_name: str
@@ -241,29 +270,33 @@ class TpchLoader(BaseWorkloadLoader):
         )
 
     def get_next_workload(self, current_time: EventTime) -> Optional[Workload]:
+        # Reset rng if this is the first workload. This is to ensure we have
+        # parity with how jobs are spawned in Spark
+        if self._current_release_pointer == 0:
+            self._rng = random.Random(self._rng_seed)
+
         to_release = []
         while (
-            self._current_release_pointer < len(self._release_times)
-            and self._release_times[self._current_release_pointer]
+            self._current_release_pointer < len(self._query_nums_and_release_times)
+            and self._query_nums_and_release_times[self._current_release_pointer][1]
             <= current_time + self._workload_update_interval
         ):
-            to_release.append(self._release_times[self._current_release_pointer])
+            to_release.append(self._query_nums_and_release_times[self._current_release_pointer])
             self._current_release_pointer += 1
 
         if (
-            self._current_release_pointer >= len(self._release_times)
+            self._current_release_pointer >= len(self._query_nums_and_release_times)
             and len(to_release) == 0
         ):
             # Nothing left to release
             return None
 
-        for t in to_release:
-            query_num = self._rng.randint(1, len(self._job_graphs))
-            query_name = f"Q{query_num}"
-            job_graph = self._job_graphs[query_name]
-            task_graph = job_graph.get_next_task_graph(
+        for i, (q, t) in enumerate(to_release):
+            query_name = f"Q{q}"
+            task_graph = self._task_graph_generators[query_name](
+                idx=i,
+                current_time=current_time,
                 start_time=t,
-                _flags=self._flags,
             )
             self._workload.add_task_graph(task_graph)
 
