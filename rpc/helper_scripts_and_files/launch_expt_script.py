@@ -63,7 +63,7 @@ def map_dataset_to_deadline(dataset_size):
 # Launch the query
 def launch_query(query_number, dataset_size, max_cores):
     deadline = map_dataset_to_deadline(dataset_size)
-    spark_submit_command = f"/serenity/scratch/dgarg/anaconda3/condabin/conda run -n spark_feb_9 && /home/dgarg39/spark_feb_9/spark_mirror/bin/spark-submit --deploy-mode cluster --master spark://130.207.125.81:7077 --conf 'spark.port.maxRetries=132' --conf 'spark.eventLog.enabled=true' --conf 'spark.eventLog.dir=/serenity/scratch/dgarg/spark_logs/event_log' --conf 'spark.sql.adaptive.enabled=false' --conf 'spark.sql.adaptive.coalescePartitions.enabled=false' --conf 'spark.sql.autoBroadcastJoinThreshold=-1' --conf 'spark.sql.shuffle.partitions=1' --conf 'spark.sql.files.minPartitionNum=1' --conf 'spark.sql.files.maxPartitionNum=1' --conf 'spark.app.deadline={deadline}' --class 'main.scala.TpchQuery' target/scala-2.13/spark-tpc-h-queries_2.13-1.0.jar {query_number} {dataset_size} {max_cores}"
+    spark_submit_command = f"/serenity/scratch/dgarg/anaconda3/condabin/conda run -n spark_feb_9 && /home/dgarg39/spark_feb_9/spark_mirror/bin/spark-submit --deploy-mode cluster --master spark://130.207.125.81:7077 --conf 'spark.port.maxRetries=132' --conf 'spark.eventLog.enabled=true' --conf 'spark.eventLog.dir=/serenity/scratch/dgarg/spark_logs/event_log' --conf 'spark.sql.adaptive.enabled=false' --conf 'spark.sql.adaptive.coalescePartitions.enabled=false' --conf 'spark.sql.autoBroadcastJoinThreshold=-1' --conf 'spark.sql.shuffle.partitions=1' --conf 'spark.sql.files.minPartitionNum=1' --conf 'spark.sql.files.maxPartitionNum=1' --conf 'spark.app.deadline={deadline}' --class 'main.scala.TpchQuery' /home/dgarg39/tpch-spark/target/scala-2.13/spark-tpc-h-queries_2.13-1.0.jar {query_number} {dataset_size} {max_cores}"
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching Query: {query_number}, "
           f"dataset: {dataset_size}GB, deadline: {deadline}s, maxCores: {max_cores}")
     try:
@@ -174,19 +174,28 @@ def main():
         for i, inter_arrival_time in enumerate(inter_arrival_times):
             time.sleep(inter_arrival_time)  # Wait for the inter-arrival time
             query_number = rng.randint(1, 22)
-            # launch_query(query_number, args.dataset_size,
-            # args.max_cores)
+            launch_query(query_number, args.dataset_size, args.max_cores)
             print("Current time: ", time.strftime('%Y-%m-%d %H:%M:%S'), " launching query: ", query_number)
     elif args.release_generator == "simulator_release_impl":
         # set the current time. Releases will happen relative to
         # it.
-        release_start_ts = time.time()
-        for i, release_time in enumerate(release_times):
-            next_release_ts = release_start_ts + release_time.time
-            # while time.time() < next_release_ts:
-            #     time.sleep(0.1)
+        inter_arrival_times = [release_times[0].time]
+        for i in range(len(release_times)-1):
+            inter_arrival_times.append(release_times[i+1].time-release_times[i].time)
+        for i, inter_arrival_time in enumerate(inter_arrival_times):
+            time.sleep(inter_arrival_time)
             query_number = rng.randint(1, 22)
-            print("Current time: ", time.strftime('%Y-%m-%d %H:%M:%S'), ", time_elapsed: ", str(release_time.time), ", launching query: ", query_number)
+            launch_query(query_number, args.dataset_size, args.max_cores)
+            print("Current time: ", time.strftime('%Y-%m-%d %H:%M:%S'), " launching query: ", query_number)
+
+        # release_start_ts = time.time()
+        # for i, release_time in enumerate(release_times):
+        #     next_release_ts = release_start_ts + release_time.time
+        #     while time.time() < next_release_ts:
+        #         time.sleep(0.1)
+        #     query_number = rng.randint(1, 22)
+        #     print("Current time: ", time.strftime('%Y-%m-%d %H:%M:%S'), ", time_elapsed: ", str(release_time.time), ", launching query: ", query_number)
+        #     launch_query(query_number, args.dataset_size, args.max_cores)
 
 if __name__ == "__main__":
     main()

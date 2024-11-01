@@ -1385,8 +1385,11 @@ class SchedulerServiceServicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer
         # if it is actually complete or will complete in the future
 
         # Get the actual task completion timestamp
+        # actual_task_completion_time = (
+        #     matched_task.start_time.time + matched_task.remaining_time.time
+        # )
         actual_task_completion_time = (
-            matched_task.start_time.time + matched_task.remaining_time.time
+            sim_time.time + matched_task.remaining_time.time
         )
 
         self._logger.info(
@@ -1615,9 +1618,11 @@ class SchedulerServiceServicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer
                     popped_item = self._tasks_marked_for_completion.get()
                     self._logger.info(
                         "[%s] Removing task from pending completion queue. "
-                        "Task details: %s",
+                        "Task details: %s. "
+                        "Timestamp: %s",
                         current_time,
                         popped_item.task,
+                        top_item.timestamp,
                     )
 
                     # Display worker pool utilization before removing task
