@@ -192,12 +192,11 @@ class TpchLoader(BaseWorkloadLoader):
                     self._flags.max_deadline_variance,
                 )
             )/100
-            print(deadline_variance_factor)
             task_graph_slo_time = math.ceil(
                 critical_path_time * deadline_variance_factor
             )
             for task in task_graph.get_nodes():
-                deadline = EventTime(current_time.time + task_graph_slo_time,
+                deadline = EventTime(start_time.time + task_graph_slo_time,
                                      unit=EventTime.Unit.US
                                      )
                 task.update_deadline(deadline)
