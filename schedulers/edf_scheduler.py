@@ -25,12 +25,14 @@ class EDFScheduler(BaseScheduler):
         self,
         preemptive: bool = False,
         runtime: EventTime = EventTime(time=-1, unit=EventTime.Unit.US),
+        env_placement_delay: EventTime = EventTime(time=0, unit=EventTime.Unit.US),
         enforce_deadlines: bool = False,
         _flags: Optional["absl.flags"] = None,
     ):
         super(EDFScheduler, self).__init__(
             preemptive=preemptive,
             runtime=runtime,
+            env_placement_delay=env_placement_delay,
             enforce_deadlines=enforce_deadlines,
             _flags=_flags,
         )
@@ -111,6 +113,7 @@ class EDFScheduler(BaseScheduler):
                 and task.deadline
                 < sim_time
                 + task.available_execution_strategies.get_fastest_strategy().runtime
+                + self.env_placement_delay
             ):
                 placements.append(Placement.create_task_cancellation(task=task))
                 self._logger.debug(
@@ -134,14 +137,14 @@ class EDFScheduler(BaseScheduler):
                         placements.append(
                             Placement.create_task_placement(
                                 task=task,
-                                placement_time=sim_time,
+                                placement_time=sim_time + self.env_placement_delay,
                                 worker_pool_id=worker_pool.id,
                                 execution_strategy=execution_strategy,
                             )
                         )
                         self._logger.debug(
                             f"[{sim_time.time}] Placed {task} on Worker Pool "
-                            f"({worker_pool.id}) to be started at {sim_time} with the "
+                            f"({worker_pool.id}) to be started at {sim_time + self.env_placement_delay} with the "
                             f"execution strategy: {execution_strategy}."
                         )
                         break

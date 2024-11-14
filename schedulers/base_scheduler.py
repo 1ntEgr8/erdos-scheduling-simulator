@@ -40,6 +40,8 @@ class BaseScheduler(object):
             decisions before they are actually placed on the WorkerPools.
         release_taskgraphs (`bool`): If `True`, the scheduler is given access to the
             entire TaskGraph for any Task that falls within the lookahead defined above.
+        env_placement_delay (`EventTime`): The expected environment delay (in us) to place tasks.
+            The scheduler should account for this by placing tasks with a delay.
         _flags (`Optional[absl.flags]`): The runtime flags that are used to initialize
             a logger instance.
     """
@@ -54,6 +56,7 @@ class BaseScheduler(object):
         branch_prediction_accuracy: float = 0.50,
         retract_schedules: bool = False,
         release_taskgraphs: bool = False,
+        env_placement_delay: EventTime = EventTime(time=0, unit=EventTime.Unit.US),
         _flags: Optional["absl.flags"] = None,
     ) -> None:
         self._preemptive = preemptive
@@ -64,6 +67,7 @@ class BaseScheduler(object):
         self._branch_prediction_accuracy = branch_prediction_accuracy
         self._retract_schedules = retract_schedules
         self._release_taskgraphs = release_taskgraphs
+        self._env_placement_delay = env_placement_delay
         self._flags = _flags
 
         if self._flags:
@@ -254,6 +258,10 @@ class BaseScheduler(object):
     @property
     def branch_prediction_accuracy(self) -> float:
         return self._branch_prediction_accuracy
+    
+    @property
+    def env_placement_delay(self) -> EventTime:
+        return self._env_placement_delay
 
     def verify_schedule(
         self,

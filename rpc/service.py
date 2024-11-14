@@ -223,7 +223,7 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
                 task_graph, stage_id_mapping = self._data_loaders[
                     DataLoader.TPCH
                 ].make_task_graph(
-                    id=id,
+                    id=request.id,
                     query_num=query_num,
                     release_time=sim_time,
                     dependencies=dependencies,
@@ -308,6 +308,8 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
         self.__get_worker_pool().add_workers([worker])
 
         msg = f"[{sim_time}] Registered worker (id={request.id}, name={request.name})"
+        
+        self._logger.info(msg)
 
         return erdos_scheduler_pb2.RegisterWorkerResponse(
             success=True,
