@@ -365,6 +365,8 @@ class Simulator(object):
             else EventTime.invalid()
         )
         self._log_task_graphs = _flags.log_graphs if _flags else False
+        self._disable_auto_task_finish_enqueue = _flags.disable_auto_task_finish_enqueue if _flags else False
+        self._env_placement_delay = EventTime(_flags.env_placement_delay, EventTime.Unit.US) if _flags else EventTime.zero()
 
         # Statistics about the Task.
         self._finished_tasks = 0
@@ -527,26 +529,13 @@ class Simulator(object):
                 tick_size,
             )
             
-            # Get current running tasks
-            running_tasks = self._worker_pools.get_placed_tasks()
-            
-            # Determine the next step size based on the smallest remaining task time or tick size
-            if running_tasks:
-                min_task_remaining_time = min(
-                    map(attrgetter("remaining_time"), running_tasks)
-                )
-                step_size = min(min_task_remaining_time, tick_size)
-                self._logger.debug(
-                    "[%s] The minimum task remaining time was %s, "
-                    "and the selected step size was %s.",
-                    self._simulator_time.to(EventTime.Unit.US).time,
-                    min_task_remaining_time,
-                    step_size,
-                )
-            else:
-                step_size = tick_size  # No tasks running, use the entire tick size
+            # NOTE: Not doing incremental steps as done using min_task_remaining_time in simulate().
+            # This is to avoid an infinite loop in case a task is not finishing (from the spark service) 
+            # but has remaining_time is 0. The worker_pool already checks to not step down tasks with 
+            # remaining_time 0. Thus, only tasks with remaining_time > 0 will be ticked.
             
             # Step the simulator forward
+            step_size = tick_size
             self.__step(step_size=step_size)
             self._logger.info(
                 f"Stepped simulator by {step_size}, new simulator time is {self._simulator_time}"
@@ -1390,7 +1379,7 @@ class Simulator(object):
                     parent.remaining_time for parent in task_graph.get_parents(task)
                 )
                 next_placement_time = event.time + max(
-                    parent_completion_time, EventTime(1, EventTime.Unit.US)
+                    parent_completion_time, EventTime(1, EventTime.Unit.US), self._env_placement_delay
                 )
                 next_placement_event = Event(
                     event_type=event.event_type,
@@ -1753,6 +1742,23 @@ class Simulator(object):
         task_finished_events = []
         for worker_pool in self._worker_pools.worker_pools:
             for task in worker_pool.step(self._simulator_time, step_size):
+                # If the task's remaining_time is 0, the simulator enqueues corresponding 
+                # TASK_FINISHED events. However, if automatic task finish is disabled, then 
+                # we dont enqueue TASK_FINISHED events here. The TASK_FINISHED event needs 
+                # to be enqueued for the simulator by the service (e.g. spark service). 
+                # This is to account for runtime delays (i.e. longer than expected runtime)
+                # that may occur in the real system.
+                # NOTE: Until finished, the task continues to occupy allotted resources 
+                # on the worker pool and blocks child tasks from being unlocked.
+                if self._disable_auto_task_finish_enqueue:
+                    self._logger.warning(
+                        "[%s] The task %s was completed, but auto task finished "
+                        "is disabled. Ignoring the completion although remaining time is %s.",
+                        self._simulator_time.time,
+                        task.unique_name,
+                        task.remaining_time
+                    )
+                    continue
                 task_finished_event = Event(
                     event_type=EventType.TASK_FINISHED,
                     time=self._simulator_time + step_size,

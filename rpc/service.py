@@ -11,7 +11,7 @@ import main
 from schedulers import EDFScheduler
 from simulator import Simulator, Event, EventTime, EventType
 from workers import Worker, WorkerPool, WorkerPools
-from workload import Resource, Resources, Workload, TaskGraph
+from workload import Resource, Resources, Workload, TaskGraph, TaskState
 from data import BaseWorkloadLoader
 from data.tpch_loader import TpchLoader
 from utils import setup_logging, setup_csv_logging
@@ -59,6 +59,9 @@ class WorkloadLoader(BaseWorkloadLoader):
 
     def add_task_graph(self, task_graph: TaskGraph):
         self._workload.add_task_graph(task_graph)
+        
+    def get_task_graph(self, name: str):
+        return self._workload.get_task_graph(name)
     
     def get_next_workload(self, current_time: EventTime) -> Optional[Workload]:
         return self._workload
@@ -96,7 +99,10 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
         self._simulator = None
         self._workload_loader = None
 
-        self._scheduler = EDFScheduler()
+        self._scheduler = EDFScheduler(
+            enforce_deadlines=FLAGS.enforce_deadlines,
+            env_placement_delay=EventTime(FLAGS.env_placement_delay, unit=EventTime.Unit.US),
+        )
 
         self._registered_task_graphs = {}
         # TODO: (Dhruv) Can we get the currently active task graphs directly from the workload object?
@@ -230,6 +236,9 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
                     dataset_size=dataset_size,
                     max_executors_per_job=max_executors_per_job,
                 )
+                self._logger.info(
+                    f"[{sim_time}] Loaded TPCH query {query_num} successfully. The task graph name is: {task_graph.name}"
+                )
             except Exception as e:
                 msg = f"[{sim_time}] Failed to load TPCH query {query_num}. Exception: {e}"
                 return erdos_scheduler_pb2.RegisterTaskGraphResponse(
@@ -246,7 +255,7 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
 
         # Add the task graph to the active task graphs if registration is successful
         self._active_task_graphs.add(request.id)
-        print(f"[{sim_time}] Task graph with {request.id} registered successfully. Active task graphs: {self._active_task_graphs}")
+        self._logger.info(f"[{sim_time}] Task graph with {request.id} registered successfully, added to registered_task_graphs {self._registered_task_graphs[request.id]}, active_task_graphs: {self._active_task_graphs}.")
         
         return erdos_scheduler_pb2.RegisterTaskGraphResponse(
             success=True,
@@ -272,7 +281,7 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
             )
         )
         
-        msg = f"[{sim_time}] Successfully marked environment as ready for task graph (id={request.id})"
+        msg = f"[{sim_time}] Successfully marked environment as ready for task graph (id={request.id}, graph={self._registered_task_graphs[request.id].graph})"
         self._logger.info(msg)
         return erdos_scheduler_pb2.RegisterEnvironmentReadyResponse(
             success=True,
@@ -326,7 +335,7 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
         
         # Check if the task graph is registered
         if request.id not in self._registered_task_graphs:
-            msg = f"[{sim_time}] Task graph with id {request.task_graph_id} not registered."
+            msg = f"[{sim_time}] Task graph with id {request.task_graph_id} not registered. Invalid GetPlacements request."
             return erdos_scheduler_pb2.GetPlacementsResponse(
                 success=False,
                 message=msg,
@@ -334,7 +343,7 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
         
         # Check if the task graph is active
         if request.id not in self._active_task_graphs:
-            msg = f"[{sim_time}] Task graph with id {request.task_graph_id} not active."
+            msg = f"[{sim_time}] Task graph with id {request.task_graph_id} not active. Invalid GetPlacements request."
             return erdos_scheduler_pb2.GetPlacementsResponse(
                 success=False,
                 message=msg,
@@ -348,7 +357,128 @@ class Servicer(erdos_scheduler_pb2_grpc.SchedulerServiceServicer):
         )
 
     async def NotifyTaskCompletion(self, request, context):
-        pass
+        sim_time = self.__sim_time()
+        
+        # Check if the task graph is registered
+        if request.application_id not in self._registered_task_graphs:
+            msg = f"[{sim_time}] Task graph with id {request.application_id} not registered. Invalid NotifyTaskCompletion request."
+            return erdos_scheduler_pb2.NotifyTaskCompletionResponse(
+                success=False,
+                message=msg,
+            )
+        
+        # Check if the task graph is currently active
+        if request.application_id not in self._active_task_graphs:
+            msg = f"[{sim_time}] Task graph with id {request.application_id} not active. Invalid NotifyTaskCompletion request."
+            return erdos_scheduler_pb2.NotifyTaskCompletionResponse(
+                success=False,
+                message=msg,
+            )
+                
+        # If the taskgraph is active, the notify task completion is valid. Proceed.
+        # Get taskgraph name based on application_id
+        # WARN: Added the "@1" suffix to application_id to match the task graph name. This works only when each app only has one taskgraph.
+        # TODO: Need to have a better way to name the task-graphs based on application ID.
+        task_graph_name = request.application_id + "@1"
+        self._logger.info(f"[{sim_time}] Processing NotifyTaskCompletion request for task id {request.task_id} in TaskGraph with name: {task_graph_name}, app-id {request.application_id}")
+        
+        # Extract task from the workload based on task_id and application_id. 
+        # Get the remaining time (NOTE: might be a bit off based on wether the simulator has ticked or not)
+        
+        task_graph = self._workload_loader.get_task_graph(task_graph_name)
+        if task_graph is None:
+            self._logger.warning(
+                "[%s] Trying to notify the backend scheduler that the task with ID %s "
+                "from application %s has completed, but the application "
+                "was not registered with the backend yet.",
+                sim_time,
+                request.task_id,
+                request.application_id,
+            )
+            return erdos_scheduler_pb2.NotifyTaskCompletionResponse(
+                success=False,
+                message=f"[{sim_time}] Application with ID {request.application_id} "
+                f"not registered yet.",
+            )
+            
+        matched_task = None
+        for task in task_graph.get_nodes():
+            if task.name == request.task_id:
+                matched_task = task
+        if matched_task is None:
+            self._logger.warning(
+                "[%s] Trying to notify the backend scheduler that the task with ID %s "
+                "from application %s has completed, but the task "
+                "was not found in the TaskGraph.",
+                sim_time,
+                request.task_id,
+                request.application_id,
+            )
+            return erdos_scheduler_pb2.NotifyTaskCompletionResponse(
+                success=False,
+                message=f"[{sim_time}] Task with ID {request.task_id} "
+                f"not found in TaskGraph {request.application_id}.",
+            )
+        
+        # Check the actual completion time of the task based on remaining time
+        actual_task_completion_time = (
+            sim_time.time + matched_task.remaining_time.time
+        )
+
+        self._logger.info(
+            "[%s] Received task for completion. task.start_time: %s ,"
+            "task.remaining_time:  %s ,  actual completion time: %s. "
+            "Task details: %s",
+            sim_time.time,
+            matched_task.start_time.time,
+            matched_task.remaining_time.time,
+            actual_task_completion_time,
+            matched_task,
+        )
+
+        if sim_time.time > actual_task_completion_time:
+            self._logger.warning(
+                "[%s] Task exceeded actual completion time by %s, "
+                "Task details: %s",
+                sim_time.time,
+                (sim_time.time - actual_task_completion_time),
+                matched_task,
+                )
+        
+        # Create and enqueue a TASK_FINISHED event for the task. NOTE: It should only be added if the task is RUNNING state.
+        # Else throw a warning and return a failure message to the spark backend.
+        if matched_task.state != TaskState.RUNNING:
+            self._logger.warning(
+                "[%s] Task is not in RUNNING state, cannot enqueue TASK_FINISHED. Task details: %s",
+                sim_time,
+                matched_task,
+                )
+            return erdos_scheduler_pb2.NotifyTaskCompletionResponse(
+                success=False,
+                message=f"Task {matched_task} not in RUNNING state, cannot enqueue TASK_FINISHED.",
+            )
+        
+        # Proceed to enqueue the TASK_FINISHED event for the task if it is in RUNNING state.    
+        task_finished_event = Event(
+            event_type=EventType.TASK_FINISHED,
+            time=EventTime(time=actual_task_completion_time, unit=EventTime.Unit.US),
+            task=matched_task,
+            )
+        
+        self._simulator._event_queue.add_event(task_finished_event)
+        self._logger.info(
+            "[%s] Service added %s to the event queue. Task supposed to complete after %s at %s.",
+            sim_time,
+            task_finished_event,
+            matched_task.remaining_time.time,
+            actual_task_completion_time,
+        )
+        
+        # Return success message to the Spark driver
+        return erdos_scheduler_pb2.NotifyTaskCompletionResponse(
+            success=True,
+            message=f"NotifyTaskCompletion for taskgraph {request.application_id} and task {matched_task} completed successfully.",
+        )
     
     async def _tick_simulator(self):
         while True:

@@ -29,6 +29,8 @@ class EDFScheduler(BaseScheduler):
         enforce_deadlines: bool = False,
         _flags: Optional["absl.flags"] = None,
     ):
+        # TODO: edf_placement_delay is only currently enabled for the EDFScheduler.
+        # Needs to be implemented for other schedulers.
         super(EDFScheduler, self).__init__(
             preemptive=preemptive,
             runtime=runtime,
@@ -144,7 +146,8 @@ class EDFScheduler(BaseScheduler):
                         )
                         self._logger.debug(
                             f"[{sim_time.time}] Placed {task} on Worker Pool "
-                            f"({worker_pool.id}) to be started at {sim_time + self.env_placement_delay} with the "
+                            f"({worker_pool.id}) to be started at {sim_time + self.env_placement_delay} after "
+                            f"considering the env placement delay of {self.env_placement_delay}, with the "
                             f"execution strategy: {execution_strategy}."
                         )
                         break

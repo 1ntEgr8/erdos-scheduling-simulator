@@ -604,7 +604,21 @@ flags.DEFINE_integer(
     "Set --unique_work_profiles to True to ensure that the same WorkProfile is not "
     "used for multiple JobGraphs.",
 )
-
+flags.DEFINE_bool(
+    "disable_auto_task_finish_enqueue",
+    False,
+    "If True, then the TASK_FINISHED event is not automatically enqueued in the simulator "
+    "even if the task's remaining time has reached 0us. This is done to explicitly "
+    "enqueue TASK_FINISHED events by the spark service for the simulator."
+)
+flags.DEFINE_integer(
+    "env_placement_delay",
+    0,
+    "It is the delay (in µs) associated with placing a task on a worker based on the "
+    "deployment environment. The delay must be considered by the scheduler when placing "
+    "tasks. Thus, the scheduler must place tasks atleast env_placement_delay us after"
+    "the current time.",
+)
 
 def main(args):
     """Main loop that loads the data from the given profile paths, and

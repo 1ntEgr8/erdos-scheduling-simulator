@@ -94,11 +94,11 @@ class TpchLoader:
                 if "children" in node:
                     node["children"] = [deps_mapping[c] for c in node["children"]]
             self._logger.info(
-                f"Mapped dependencies for TPC-H query {query_name} as {deps_mapping}."
+                f"Mapped dependencies for TPC-H query {query_name} (app id={id}) as {deps_mapping}."
             )
 
         # Construct a JobGraph
-        job_graph = JobGraph(name=f"{query_name}[{id}]")
+        job_graph = JobGraph(name=id)
         profiler_data = get_all_stage_info_for_query(
             query_num,
             profile_type,
@@ -138,7 +138,7 @@ class TpchLoader:
             _flags=self._flags,
         )
 
-        self._logger.info(f"Constructed TaskGraph for TPC-H query {query_name}.")
+        self._logger.info(f"Constructed TaskGraph {task_graph.name} for TPC-H query: {query_name} and job id: {id}.")
 
         return task_graph, deps_mapping
 
@@ -245,13 +245,14 @@ class TpchLoader:
                 if all(v in mapping for u, v in graph1.edges):
                     # graph structures match
                     # mapping is a dict {key=original-stage-id, val=app-stage-id}
-                    # we reverse reversed mapping from app-stage-id to orig-stage-id
+                    # we return the reversed mapping i.e {app-stage-id -> orig-stage-id}
                     reversed_mapping = {v: k for k, v in mapping.items()}
                     return True, reversed_mapping
 
             return False, None
 
         base_deps = self._graphs[query_num]
+        # The mapping is from app-stage-id to original-stage-id
         is_same, mapping = are_structurally_same(
             deps_to_nx_graph(base_deps), deps_to_nx_graph(deps)
         )
